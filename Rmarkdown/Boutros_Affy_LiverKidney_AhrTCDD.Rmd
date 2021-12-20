@@ -1,0 +1,1741 @@
+---
+title: "Boutros - *Ahr*-null and Wild-type Mice - TCDD - Liver/Kidney Microarray"
+author: "Warren Sink"
+date: "12/10/2021"
+output: 
+  html_document:
+    theme: united
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: hide
+    df_print: paged
+---
+
+```{css, echo=FALSE}
+pre {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+pre[class] {
+  max-height: 500px;
+}
+
+.watch-out {
+  background-color: white;
+  border: 3px solid green;
+  font-weight: bold;
+}
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = TRUE, class.source = "watch-out") 
+library(tidyverse)
+library(affy)
+library(gcrma)
+library(mouse4302.db)
+library(limma)
+library(UpSetR)
+library(knitr)
+
+parent <- sub("/[^/]+$", "", getwd())
+directoryPlots <- paste(parent, "plots", sep = "/")
+output <- paste(parent, "output", sep = "/")
+```
+
+# Differentially regulated genes by the AhR using Ahr-null mice and the AhR-selective ligand, TCDD
+
+Code and Plots are organized into tabbed sections. All code is hidden until you hit the "Code" button on the right of a section.
+
+This document serves as a record for the reprisal of the kidney and liver cDNA microarrays from the publication [Dioxin-Dependent and Dioxin-Independent Gene Batteries: Comparison of Liver and Kidney in AHR-Null Mice](https://academic.oup.com/toxsci/article/112/1/245/1638073). Boutros *et al.* evaluated AhR-regulated gene expression with 15-week-old, male, wild-type and Ahr-null C57BL/6J mice gavaged with either a single dose of 1000 µg/kg 2,3,7,8-tetrachlorodibenzo-*p*-dioxin (TCDD) or purely corn oil vehicle and sacrificed and harvested liver and kidneys 19 hours post-gavage. I haven not been to locate if the livers and kidneys originated with the same mice (that they are paired); so, I have treated each liver and kidney as arising from separate individual mice. The authors came to the conclusion the AhR and interactions between TCDD and the AhR regulate distinct process depending upon the organ. Additionally, they corroborated biochemical studies illustrating TCDD's selective binding to the AhR (and I have reproduced below) TCDD, independent of AhR, elicits little to no differential mRNA expression.
+
+For processing and modeling the microarray data, I have tried to follow the appropriate methods section of Boutros's 2009 paper. The raw affymetrix microarray intensity values from GEO entries [GSE15857](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE15857) (kidney) and [GSE15858](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE15858) (liver) are in the data folder.
+
+In Boutros's paper, they used (and below I have reproduced) the following linear model in `limma`: $$Y = Basal + AhR + TCDD + AhR:TCDD$$ where $Y$ refers to a ProbeSet's expression level (see next paragraph for explanation of what a ProbeSet is), $Basal$ refers to the basal gene expression of a ProbeSet, $AhR$ refers to the animal's *Ahr* genotype, and $TCDD$ refers to whether the animals was gavaged with 1000 µg/kg TCDD or vehicle. The final term, $AhR:TCDD$, refers to an effect on a ProbeSet's expression level explained by the interaction of TCDD and AhR, which makes sense since TCDD selectively binds and activates the AhR, promoting gene regulation. The linear model was fit separately for each organ's 45,101 unique ProbeSets and for each organ, kidney and liver. After fitting the model to each Probeset, each coefficient's p-value (for $AhR$, $TCDD$, and $AhR:TCDD$) were adjusted by the Benjamanini-Hochberg False Discovery Ratio method. This contrasts with their cited Bayesian-FDR method. Although this leads to differences in the exact number of significantly regulated ProbeSets in the liver and kidney as as response to *Ahr* genotype or TCDD-AhR interactions, my non-Bayesian approach produces roughly similar results.
+
+To clarify what is a ProbeSet in an affymetrix microarray, it is composed of multiple cDNA sequences with slightly different properties that bind to the same particular gene. ProbeSets, which are specific to a gene, are represented by "[1-9]*at" and those, which non-specifically cross-hybridize to non-targeted cDNAs, are represented by "*[a-z]at". Some genes have multiple ProbeSets with some specific and others potentially cross-hybridizing. Usually, they are strongly correlated but not always. Although there are ways people use to narrow down the number and variety of ProbeSets, I have not eliminated any because the effort is not worth the loss of potentially valuable information. For certain genes, non-specific ProbeSets are all that's there: for example, Cyp1a1, the most highly upregulated ProbeSet in the kidney microarrays of wild-type mice after gavaging with 1000 µg/kg TCDD, has only one ProbeSet and it may potentially cross-hybridize (its id is 1422217_a_at).
+
+## Kidney {.tabset .tabset-pills .tabset-fade}
+
+I performed the Boutros workflow on the kidney gene expression first.
+
+### Metadata pull-down
+
+```{r}
+directory <- paste(parent, "data/GSE15857_RAW", sep = "/")
+
+gset <- GEOquery::getGEO("GSE15857", GSEMatrix =TRUE)
+accession <- gset$GSE15857_series_matrix.txt.gz$geo_accession
+filename <- paste(accession, ".CEL", sep="")
+sex <- gset$GSE15857_series_matrix.txt.gz$`gender:ch1`
+tissue <- gset$GSE15857_series_matrix.txt.gz$`tissue:ch1`
+Ahr <- gset$GSE15857_series_matrix.txt.gz$`ahr:ch1`
+treatment <- gset$GSE15857_series_matrix.txt.gz$`treatment:ch1`
+GSE15857_meta <- data.frame(cbind(filename, accession, sex, tissue, Ahr, treatment))
+
+#kable(GSE15857_meta, table.attr = "class=\"striped\"", format = "html")
+GSE15857_meta
+rownames(GSE15857_meta) <- GSE15857_meta$filename
+
+#fns <- list.celfiles(directory)
+#fns %in% GSE15857_meta[, 1] 
+```
+
+### Reading in Data and Probe-dependent Normalization
+
+```{r, results=FALSE}
+Data <- ReadAffy(filenames = GSE15857_meta$filename,
+                 phenoData = GSE15857_meta, celfile.path=directory,
+                 compress=F,
+                 verbose=T, cdfname = "mouse4302")
+
+#exprs(Data)
+
+eset <- gcrma(Data)
+
+#exprs(eset)
+
+eset_norm <- exprs(eset)
+
+#dim(eset_norm)
+```
+
+### Cleaning and FC Calculations
+
+```{r, results=FALSE}
+## Bimap interface:
+probeID <- mouse4302ACCNUM
+
+# Get the probe identifiers that are mapped to an ACCNUM
+mapped_probes <- mappedkeys(probeID)
+
+## Bimap interface:
+geneID <- mouse4302GENENAME
+
+# Get the probe identifiers that are mapped to an ACCNUM
+mapped_genes <- mappedkeys(geneID)
+
+Symbol <- select(mouse4302.db, keys=mapped_genes, columns = c("SYMBOL"))
+
+eset_norm_wSymbols <-
+  eset_norm %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "PROBEID") %>%
+  left_join(Symbol, by = "PROBEID") %>%
+  dplyr::select("probeID"=PROBEID, "Symbol"=SYMBOL, everything())
+
+## BiomaRt output - 
+#ensembl <- biomaRt::useEnsembl(biomart = "genes",mirror="uswest",dataset = "mmusculus_gene_ensembl")
+#saveRDS(ensembl, paste(output, "ensembl.RDS", sep = "/"))
+ensembl <- readRDS(paste(output, "ensembl.RDS", sep = "/"))
+biomart.output <- biomaRt::getBM(mart = ensembl,
+                                 filters = "external_gene_name",
+                                 values = eset_norm_wSymbols$Symbol,
+                                 attributes =c("external_gene_name","description", "chromosome_name"),
+                                 uniqueRows = TRUE)
+
+eset_wGeneMeta <-
+  eset_norm_wSymbols %>%
+  left_join(biomart.output, by = c("Symbol"="external_gene_name")) %>%
+  dplyr::select(probeID, Symbol, description, "chromosome"=chromosome_name, everything()) %>%
+  distinct(probeID, .keep_all = T)
+
+GSE15857_metaNoFN <-
+  GSE15857_meta %>%
+  dplyr::select(-filename)
+rownames(GSE15857_metaNoFN) <- c()
+sampleInfo <- names(GSE15857_metaNoFN)
+
+colnames(eset_wGeneMeta) <- str_remove(colnames(eset_wGeneMeta), pattern = ".CEL")
+probeMeta <- c("probeID", "Symbol", "description", "chromosome")
+eset_long_design <-
+  eset_wGeneMeta %>%
+  pivot_longer(-all_of(probeMeta), names_to = "accession", values_to = "expr") %>%
+  left_join(GSE15857_metaNoFN, by = c("accession")) %>%
+  dplyr::select(all_of(probeMeta), all_of(sampleInfo), everything())
+
+FC_filtCornOil <-
+  eset_long_design %>%
+  filter(treatment=="Corn oil") %>%
+  group_by(Ahr, probeID) %>%
+  summarise(meanExpr = mean(expr)) %>%
+  group_by(probeID) %>%
+  summarise(FC = meanExpr[Ahr=="wildtype"] - meanExpr[Ahr=="knockout"]) %>%
+  arrange(desc(FC)) %>%
+  left_join(Symbol, by = c("probeID"="PROBEID")) %>%
+  dplyr::select(probeID, "Symbol"=SYMBOL, everything()) %>%
+  left_join(biomart.output, by = c("Symbol"="external_gene_name")) %>%
+  dplyr::select(probeID, Symbol, description, "chromosome"=chromosome_name, everything())
+
+
+FC_filtTCDD <-
+  eset_long_design %>%
+  filter(treatment=="TCDD") %>%
+  group_by(Ahr, probeID) %>%
+  summarise(meanExpr = mean(expr)) %>%
+  group_by(probeID) %>%
+  summarise(FC = meanExpr[Ahr=="wildtype"] - meanExpr[Ahr=="knockout"]) %>%
+  arrange(desc(FC)) %>%
+  left_join(Symbol, by = c("probeID"="PROBEID")) %>%
+  dplyr::select(probeID, "Symbol"=SYMBOL, everything()) %>%
+  left_join(biomart.output, by = c("Symbol"="external_gene_name")) %>%
+  dplyr::select(probeID, Symbol, description, "chromosome"=chromosome_name, everything())
+
+
+FC_filtWT <-
+  eset_long_design %>%
+  filter(Ahr == "wildtype") %>%
+  group_by(treatment, probeID) %>%
+  summarise(meanExpr = mean(expr)) %>%
+  group_by(probeID) %>%
+  summarise(FC = meanExpr[treatment=="TCDD"] - meanExpr[treatment=="Corn oil"]) %>%
+  arrange(desc(FC)) %>%
+  left_join(Symbol, by = c("probeID"="PROBEID")) %>%
+  dplyr::select(probeID, "Symbol"=SYMBOL, everything()) %>%
+  left_join(biomart.output, by = c("Symbol"="external_gene_name")) %>%
+  dplyr::select(probeID, Symbol, description, "chromosome"=chromosome_name, everything())
+  
+
+FC_filtAhrNull <-
+  eset_long_design %>%
+  filter(Ahr == "knockout") %>%
+  group_by(treatment, probeID) %>%
+  summarise(meanExpr = mean(expr)) %>%
+  group_by(probeID) %>%
+  summarise(FC = meanExpr[treatment=="TCDD"] - meanExpr[treatment=="Corn oil"]) %>%
+  arrange(desc(FC)) %>%
+  left_join(Symbol, by = c("probeID"="PROBEID")) %>%
+  dplyr::select(probeID, "Symbol"=SYMBOL, everything()) %>%
+  left_join(biomart.output, by = c("Symbol"="external_gene_name")) %>%
+  dplyr::select(probeID, Symbol, description, "chromosome"=chromosome_name, everything())
+
+FC_filtWT_Ahr <- 
+  FC_filtWT %>% 
+  dplyr::select(probeID, FC) %>%
+  mutate(Ahr = "wildtype") %>% 
+  dplyr::select(Ahr, probeID, FC)
+
+FC_filtAhrnull_Ahr <- 
+  FC_filtAhrNull %>% 
+  dplyr::select(probeID, FC) %>%
+  mutate(Ahr = "knockout") %>% 
+  dplyr::select(Ahr, probeID, FC)
+
+FC_WToverKO <-
+  rbind(FC_filtWT_Ahr, FC_filtAhrnull_Ahr) %>%
+  group_by(probeID) %>%
+  summarise(FC = FC[Ahr == "wildtype"] - FC[Ahr == "knockout"]) %>%
+  arrange(desc(FC)) %>%
+  left_join(Symbol, by = c("probeID"="PROBEID")) %>%
+  dplyr::select(probeID, "Symbol"=SYMBOL, everything()) %>%
+  left_join(biomart.output, by = c("Symbol"="external_gene_name")) %>%
+  dplyr::select(probeID, Symbol, description, "chromosome"=chromosome_name, everything())
+
+Kidney_FCs_table <- 
+  FC_filtWT %>%
+  rename("FC"="FC_WT_TCDD") %>%
+  left_join(FC_filtAhrNull[, which(names(FC_filtAhrNull) %in% c("probeID", "FC"))], by = "probeID") %>%
+  rename("FC"="FC_KO_TCDD") %>%
+  left_join(FC_WToverKO[, which(names(FC_WToverKO) %in% c("probeID", "FC"))], by = "probeID") %>%
+  rename("FC"="FC_TCDD_WToverKO") %>%
+  left_join(FC_filtCornOil[, which(names(FC_filtCornOil) %in% c("probeID", "FC"))], by = "probeID") %>%
+  rename("FC"="FC_WToverKO_CornOil") %>%
+  left_join(FC_filtTCDD[, which(names(FC_filtTCDD) %in% c("probeID", "FC"))], by = "probeID") %>%
+  rename("FC"="FC_WToverKO_TCDD") %>%
+  distinct(probeID, .keep_all = TRUE)
+
+#kable(Kidney_FCs_table, digits = 4, table.attr = "class=\"striped\"", format = "html")
+```
+
+### Principal Components 1 and 2
+
+Kidney gene expression scores plot of first two Principal Components with squares indicating wildtype Ahr mice and circles indicating knockouts; also, red indicating mice gavaged once with 1000 µg/kg TCDD 19 hours prior to sacrifice and blue indicating a gavage with vehicle (0 µg/kg TCDD).
+
+The kidney gene expression is primarily separated by their *Ahr* genotype as evident by the first Principal Component. Secondarily, it's driven by the administration of 1000 µg/kg TCDD or vehicle.
+
+```{r}
+kidney_wide_tr <-
+  eset_long_design %>%
+  dplyr::select(-Symbol, -Ahr, -treatment, -description, -chromosome, -sex, -tissue) %>%
+  pivot_wider(names_from = "probeID", values_from = "expr") %>%
+  left_join(GSE15857_metaNoFN, by="accession") %>%
+  dplyr::select(all_of(sampleInfo), everything())
+
+#PCA
+res.pca <- prcomp(kidney_wide_tr[,6:ncol(kidney_wide_tr)], center = TRUE)
+
+# PCA scores
+scores <-
+  res.pca %>%
+  .[["x"]] %>%
+  as.data.frame()
+
+# PCs' percent explained variance
+eigenAttributes <- factoextra::get_eig(res.pca)
+pc1_pev <- round(eigenAttributes[1,which(names(eigenAttributes) %in% c("variance.percent"))],2)
+pc2_pev <- round(eigenAttributes[2,which(names(eigenAttributes) %in% c("variance.percent"))],2)
+
+boundaryMaxPC1 <- res.pca[["x"]] %>% as.data.frame() %>% dplyr::select(PC1) %>% max() + 1
+boundaryMinPC1 <- res.pca[["x"]] %>% as.data.frame() %>% dplyr::select(PC1) %>% min() - 1
+boundaryMaxPC2 <- res.pca[["x"]] %>% as.data.frame() %>% dplyr::select(PC2) %>% max() + 1
+boundaryMinPC2 <- res.pca[["x"]] %>% as.data.frame() %>% dplyr::select(PC2) %>% min() - 1
+width <- (boundaryMaxPC1 - boundaryMinPC1) / 2
+height <- (boundaryMaxPC2 - boundaryMinPC2) / 2
+#pdf(paste(directoryPlots, "Boutros_Microarray_Kidney.pdf", sep = "/"), width = width, height = height)
+res.pca[["x"]] %>%
+  as.data.frame() %>%
+  cbind(kidney_wide_tr[,1:5], .) %>%
+  ggplot(aes(x = PC1, y = PC2, fill = treatment)) +
+  geom_point(aes(shape = Ahr),size=10, stroke = 2, pch=ifelse(Ahr=="knockout", 21, 22)) +
+  geom_hline(yintercept=0, alpha = 0.2) +
+  geom_vline(xintercept=0, alpha = 0.2) +
+  #ggrepel::geom_text_repel(aes(x = PC1, y = PC2, label = ID)) +
+  labs(x=bquote("PC1 ("~.(pc1_pev)~"%)"), y=bquote("PC2 ("~.(pc2_pev)~"%)")) +
+  scale_fill_discrete(guide = "none") +
+  scale_x_continuous(limits = c(boundaryMinPC1, boundaryMaxPC1)) +
+  scale_y_continuous(limits = c(boundaryMinPC2, boundaryMaxPC2)) +
+  cowplot::theme_cowplot() +
+  theme(legend.position = "bottom", 
+        legend.justification = "center")
+#dev.off()
+```
+
+### Statistical Modeling (limma)
+
+```{r}
+Ahr <- as.factor(Ahr)
+treatment <- as.factor(treatment)
+
+design <- model.matrix(~ Ahr + treatment + Ahr:treatment)
+fit <- lmFit(eset, design)
+fit_eb <- eBayes(fit)
+
+tt_fit_eb_ahr <- 
+  topTable(fit_eb, number=nrow(eset_norm), coef=2, adjust="BH") %>% # Ahr 
+  mutate(Ahr = ifelse(adj.P.Val <= 0.05, "*", "")) %>%
+  dplyr::select(Ahr) %>%
+  rownames_to_column(var="probeID")
+
+tt_fit_eb_tcdd <- 
+  topTable(fit_eb, number=nrow(eset_norm), coef=3, adjust="BH") %>%# TCDD
+  mutate(TCDD = ifelse(adj.P.Val <= 0.05, "*", "")) %>%
+  dplyr::select(TCDD) %>%
+  rownames_to_column(var="probeID")
+
+tt_fit_eb_interaction <- 
+  topTable(fit_eb, number=nrow(eset_norm), coef=4, adjust="BH") %>%# Interaction
+  mutate(Interaction = ifelse(adj.P.Val <= 0.05, "*", "")) %>%
+  dplyr::select(Interaction) %>%
+  rownames_to_column(var="probeID")
+
+sigCombined <- 
+  tt_fit_eb_ahr %>%
+  left_join(tt_fit_eb_tcdd, by = "probeID") %>%
+  left_join(tt_fit_eb_interaction, by = "probeID")
+
+Kidney_FCs_table_final <- 
+  Kidney_FCs_table %>%
+  left_join(sigCombined, "probeID") 
+
+folder_names <- c("parent", "directoryPlots", "output")
+rm(list=ls()[! ls() %in% c("Kidney_FCs_table_final", "ensembl", folder_names)])
+saveRDS(Kidney_FCs_table_final, paste(output, "Kidney_FCs_table_final.RDS", sep = "/"))
+
+Kidney_FCs_table_final %>%
+  dplyr::select(probeID, Symbol, description, FC_WT_TCDD, FC_WToverKO_CornOil) %>%
+  arrange(desc(FC_WT_TCDD)) 
+```
+
+##  {.unnumbered}
+
+## Liver {.tabset .tabset-pills .tabset-fade}
+
+Below is a reproduction of the Boutros workflow on the liver cDNA microarrays with the frequentist FDR correction instead of the Bayesian-FDR method.
+
+### Metadata pull-down
+
+```{r}
+directory <- paste(parent, "data/GSE15858_RAW", sep = "/")
+
+gset <- GEOquery::getGEO("GSE15858", GSEMatrix =TRUE)
+accession <- gset$GSE15858_series_matrix.txt.gz$geo_accession
+filename <- paste(accession, ".CEL.gz", sep="")
+sex <- gset$GSE15858_series_matrix.txt.gz$`gender:ch1`
+tissue <- gset$GSE15858_series_matrix.txt.gz$`tissue:ch1`
+Ahr <- gset$GSE15858_series_matrix.txt.gz$`ahr:ch1`
+treatment <- gset$GSE15858_series_matrix.txt.gz$`treatment:ch1`
+GSE15858_meta <- data.frame(cbind(filename, accession, sex, tissue, Ahr, treatment))
+
+GSE15858_meta
+
+rownames(GSE15858_meta) <- GSE15858_meta$filename
+
+#fns <- list.celfiles(directory)
+#fns %in% GSE15858_meta[, 1] 
+```
+
+### Reading in Data and Probe-dependent Normalization
+
+```{r, results=FALSE}
+Data <- ReadAffy(filenames = GSE15858_meta$filename,
+                 phenoData = GSE15858_meta, celfile.path=directory,
+                 compress=T,
+                 verbose=T, cdfname = "mouse4302")
+
+#exprs(Data)
+
+eset <- gcrma(Data)
+
+#exprs(eset)
+
+eset_norm <- exprs(eset)
+
+#dim(eset_norm)
+```
+
+### Cleaning and FC Calculations
+
+```{r, results=FALSE}
+## Bimap interface:
+probeID <- mouse4302ACCNUM
+
+# Get the probe identifiers that are mapped to an ACCNUM
+mapped_probes <- mappedkeys(probeID)
+
+## Bimap interface:
+geneID <- mouse4302GENENAME
+
+# Get the probe identifiers that are mapped to an ACCNUM
+mapped_genes <- mappedkeys(geneID)
+
+Symbol <- select(mouse4302.db, keys=mapped_genes, columns = c("SYMBOL"))
+
+eset_norm_wSymbols <-
+  eset_norm %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "PROBEID") %>%
+  left_join(Symbol, by = "PROBEID") %>%
+  dplyr::select("probeID"=PROBEID, "Symbol"=SYMBOL, everything())
+
+## BiomaRt output - 
+#ensembl <- biomaRt::useEnsembl(biomart = "genes",mirror="uswest",dataset = "mmusculus_gene_ensembl")
+biomart.output <- biomaRt::getBM(mart = ensembl,
+                                 filters = "external_gene_name",
+                                 values = eset_norm_wSymbols$Symbol,
+                                 attributes =c("external_gene_name","description", "chromosome_name"),
+                                 uniqueRows = TRUE)
+
+
+eset_wGeneMeta <-
+  eset_norm_wSymbols %>%
+  left_join(biomart.output, by = c("Symbol"="external_gene_name")) %>%
+  dplyr::select(probeID, Symbol, description, "chromosome"=chromosome_name, everything()) %>%
+  distinct()
+
+GSE15858_metaNoFN <-
+  GSE15858_meta %>%
+  dplyr::select(-filename)
+rownames(GSE15858_metaNoFN) <- c()
+sampleInfo <- names(GSE15858_metaNoFN)
+
+colnames(eset_wGeneMeta) <- str_remove(colnames(eset_wGeneMeta), pattern = ".CEL.gz")
+probeMeta <- c("probeID", "Symbol", "description", "chromosome")
+eset_long_design <-
+  eset_wGeneMeta %>%
+  pivot_longer(-all_of(probeMeta), names_to = "accession", values_to = "expr") %>%
+  left_join(GSE15858_metaNoFN, by = c("accession")) %>%
+  dplyr::select(all_of(probeMeta), all_of(sampleInfo), everything()) %>%
+  distinct()
+
+FC_filtCornOil <-
+  eset_long_design %>%
+  filter(treatment=="Corn oil") %>%
+  group_by(Ahr, probeID) %>%
+  summarise(meanExpr = mean(expr)) %>%
+  group_by(probeID) %>%
+  summarise(FC = meanExpr[Ahr=="wildtype"] - meanExpr[Ahr=="knockout"]) %>%
+  arrange(desc(FC)) %>%
+  left_join(Symbol, by = c("probeID"="PROBEID")) %>%
+  dplyr::select(probeID, "Symbol"=SYMBOL, everything()) %>%
+  left_join(biomart.output, by = c("Symbol"="external_gene_name")) %>%
+  dplyr::select(probeID, Symbol, description, "chromosome"=chromosome_name, everything())
+
+
+FC_filtTCDD <-
+  eset_long_design %>%
+  filter(treatment=="TCDD") %>%
+  group_by(Ahr, probeID) %>%
+  summarise(meanExpr = mean(expr)) %>%
+  group_by(probeID) %>%
+  summarise(FC = meanExpr[Ahr=="wildtype"] - meanExpr[Ahr=="knockout"]) %>%
+  arrange(desc(FC)) %>%
+  left_join(Symbol, by = c("probeID"="PROBEID")) %>%
+  dplyr::select(probeID, "Symbol"=SYMBOL, everything()) %>%
+  left_join(biomart.output, by = c("Symbol"="external_gene_name")) %>%
+  dplyr::select(probeID, Symbol, description, "chromosome"=chromosome_name, everything())
+
+FC_filtWT <-
+  eset_long_design %>%
+  filter(Ahr == "wildtype") %>%
+  group_by(treatment, probeID) %>%
+  summarise(meanExpr = mean(expr)) %>%
+  group_by(probeID) %>%
+  summarise(FC = meanExpr[treatment=="TCDD"] - meanExpr[treatment=="Corn oil"]) %>%
+  arrange(desc(FC)) %>%
+  left_join(Symbol, by = c("probeID"="PROBEID")) %>%
+  dplyr::select(probeID, "Symbol"=SYMBOL, everything()) %>%
+  left_join(biomart.output, by = c("Symbol"="external_gene_name")) %>%
+  dplyr::select(probeID, Symbol, description, "chromosome"=chromosome_name, everything())
+  
+
+FC_filtAhrNull <-
+  eset_long_design %>%
+  filter(Ahr == "knockout") %>%
+  group_by(treatment, probeID) %>%
+  summarise(meanExpr = mean(expr)) %>%
+  group_by(probeID) %>%
+  summarise(FC = meanExpr[treatment=="TCDD"] - meanExpr[treatment=="Corn oil"]) %>%
+  arrange(desc(FC)) %>%
+  left_join(Symbol, by = c("probeID"="PROBEID")) %>%
+  dplyr::select(probeID, "Symbol"=SYMBOL, everything()) %>%
+  left_join(biomart.output, by = c("Symbol"="external_gene_name")) %>%
+  dplyr::select(probeID, Symbol, description, "chromosome"=chromosome_name, everything())
+
+FC_filtWT_Ahr <- 
+  FC_filtWT %>% 
+  dplyr::select(probeID, FC) %>%
+  mutate(Ahr = "wildtype") %>% 
+  dplyr::select(Ahr, probeID, FC)
+
+FC_filtAhrnull_Ahr <- 
+  FC_filtAhrNull %>% 
+  dplyr::select(probeID, FC) %>%
+  mutate(Ahr = "knockout") %>% 
+  dplyr::select(Ahr, probeID, FC)
+
+FC_WToverKO <-
+  rbind(FC_filtWT_Ahr, FC_filtAhrnull_Ahr) %>%
+  group_by(probeID) %>%
+  summarise(FC = FC[Ahr == "wildtype"] - FC[Ahr == "knockout"]) %>%
+  arrange(desc(FC)) %>%
+  left_join(Symbol, by = c("probeID"="PROBEID")) %>%
+  dplyr::select(probeID, "Symbol"=SYMBOL, everything()) %>%
+  left_join(biomart.output, by = c("Symbol"="external_gene_name")) %>%
+  dplyr::select(probeID, Symbol, description, "chromosome"=chromosome_name, everything())
+
+Liver_FCs_table <- 
+  FC_filtWT %>%
+  rename("FC"="FC_WT_TCDD") %>%
+  left_join(FC_filtAhrNull[, which(names(FC_filtAhrNull) %in% c("probeID", "FC"))], by = "probeID") %>%
+  rename("FC"="FC_KO_TCDD") %>%
+  left_join(FC_WToverKO[, which(names(FC_WToverKO) %in% c("probeID", "FC"))], by = "probeID") %>%
+  rename("FC"="FC_TCDD_WToverKO") %>%
+  left_join(FC_filtCornOil[, which(names(FC_filtCornOil) %in% c("probeID", "FC"))], by = "probeID") %>%
+  rename("FC"="FC_WToverKO_CornOil") %>%
+  left_join(FC_filtTCDD[, which(names(FC_filtTCDD) %in% c("probeID", "FC"))], by = "probeID") %>%
+  rename("FC"="FC_WToverKO_TCDD") %>%
+  distinct(probeID, .keep_all = TRUE)
+```
+
+### Principal Components 1 and 2
+
+Kidney gene expression scores plot of first two Principal Components with squares indicating wildtype Ahr mice and circles indicating knockouts; also, red indicating mice gavaged once with 1000 µg/kg TCDD 19 hours prior to sacrifice and blue indicating a gavage with vehicle (0 µg/kg TCDD).
+
+Like the kidney, the liver gene expression is primarily separated by their *Ahr* genotype as evident by the first Principal Component.
+
+Unlike the kidney, which separated wild-type mice by TCDD dose across the second Principal Component, the first Principal Component also separates the wild-type liver gene expression by TCDD dose and simultaneously fails to separate the *Ahr*-null mice by the same token. Whether an *Ahr*-null mouse has been gavaged with 1000 µg/kg TCDD or vehicle, it is more similar to an oppositely-treated *Ahr*-null mouse than they are to a wild-type mouse treated the same. Additionally, as one might expect, *Ahr*-null mice are more similar to wild-type mice gavaged with the vehicle than they are to the wild-type mice gavaged with TCDD.
+
+```{r}
+liver_wide_tr <-
+  eset_long_design %>%
+  dplyr::select(probeID, accession, expr) %>%
+  distinct() %>%
+  pivot_wider(names_from = "probeID", values_from = "expr") %>%
+  left_join(GSE15858_metaNoFN, by="accession") %>%
+  dplyr::select(all_of(sampleInfo), everything())
+
+#PCA
+res.pca <- prcomp(liver_wide_tr[,6:ncol(liver_wide_tr)], center = TRUE)
+
+# PCA scores
+scores <-
+  res.pca %>%
+  .[["x"]] %>%
+  as.data.frame()
+
+# PCs' percent explained variance
+eigenAttributes <- factoextra::get_eig(res.pca)
+pc1_pev <- round(eigenAttributes[1,which(names(eigenAttributes) %in% c("variance.percent"))],2)
+pc2_pev <- round(eigenAttributes[2,which(names(eigenAttributes) %in% c("variance.percent"))],2)
+
+boundaryMaxPC1 <- res.pca[["x"]] %>% as.data.frame() %>% dplyr::select(PC1) %>% max() + 1
+boundaryMinPC1 <- res.pca[["x"]] %>% as.data.frame() %>% dplyr::select(PC1) %>% min() - 1
+boundaryMaxPC2 <- res.pca[["x"]] %>% as.data.frame() %>% dplyr::select(PC2) %>% max() + 1
+boundaryMinPC2 <- res.pca[["x"]] %>% as.data.frame() %>% dplyr::select(PC2) %>% min() - 1
+width <- (boundaryMaxPC1 - boundaryMinPC1) / 2
+height <- (boundaryMaxPC2 - boundaryMinPC2) / 2
+#pdf(paste(directoryPlots, "Boutros_Microarray_Liver.pdf", sep = "/"), width = width/10, height = height/10)
+res.pca %>%
+  .[["x"]] %>%
+  as.data.frame() %>%
+  cbind(liver_wide_tr[,1:5], .) %>%
+  ggplot(aes(x = PC1, y = PC2, fill = treatment, shape = Ahr)) +
+  geom_point(size=10, stroke = 2, pch=ifelse(Ahr=="knockout", 21, 22)) +
+  geom_hline(yintercept=0, alpha = 0.2) +
+  geom_vline(xintercept=0, alpha = 0.2) +
+  #ggrepel::geom_text_repel(aes(x = PC1, y = PC2, label = ID)) +
+  labs(x=bquote("PC1 ("~.(pc1_pev)~"%)"), y=bquote("PC2 ("~.(pc2_pev)~"%)")) +
+  scale_fill_discrete(guide = "none") +
+  scale_x_continuous(limits = c(boundaryMinPC1, boundaryMaxPC1)) +
+  scale_y_continuous(limits = c(boundaryMinPC2, boundaryMaxPC2)) +
+  cowplot::theme_cowplot() +
+  theme(legend.position = "bottom", 
+        legend.justification = "center")
+#dev.off()
+```
+
+### Statistical Modeling (limma)
+
+```{r}
+Ahr <- as.factor(Ahr)
+treatment <- as.factor(treatment)
+
+design <- model.matrix(~ Ahr + treatment + Ahr:treatment)
+fit <- lmFit(eset, design)
+fit_eb <- eBayes(fit)
+
+tt_fit_eb <- 
+  topTable(fit_eb, number=nrow(eset_norm), coef=2:4) %>%
+  mutate(Ahr = ifelse(Ahrwildtype <= 0.05, "*", ""),
+         TCDD = ifelse(treatmentTCDD <= 0.05, "*", ""),
+         Interaction = ifelse(Ahrwildtype.treatmentTCDD <= 0.05, "*", "")) %>%
+  dplyr::select(Ahr, TCDD, Interaction) %>%
+  rownames_to_column(var="probeID")
+
+tt_fit_eb_ahr <- 
+  topTable(fit_eb, number=nrow(eset_norm), coef=2, adjust="BH") %>% # Ahr 
+  mutate(Ahr = ifelse(adj.P.Val <= 0.05, "*", "")) %>%
+  dplyr::select(Ahr) %>%
+  rownames_to_column(var="probeID")
+
+tt_fit_eb_tcdd <- 
+  topTable(fit_eb, number=nrow(eset_norm), coef=3, adjust="BH") %>%# TCDD
+  mutate(TCDD = ifelse(adj.P.Val <= 0.05, "*", "")) %>%
+  dplyr::select(TCDD) %>%
+  rownames_to_column(var="probeID")
+
+tt_fit_eb_interaction <- 
+  topTable(fit_eb, number=nrow(eset_norm), coef=4, adjust="BH") %>%# Interaction
+  mutate(Interaction = ifelse(adj.P.Val <= 0.05, "*", "")) %>%
+  dplyr::select(Interaction) %>%
+  rownames_to_column(var="probeID")
+
+sigCombined <- 
+  tt_fit_eb_ahr %>%
+  left_join(tt_fit_eb_tcdd, by = "probeID") %>%
+  left_join(tt_fit_eb_interaction, by = "probeID")
+
+Liver_FCs_table_final <- 
+  Liver_FCs_table %>%
+  left_join(sigCombined, "probeID") 
+
+folder_names <- c("parent", "directoryPlots", "output")
+rm(list=ls()[! ls() %in% c("Kidney_FCs_table_final", "Liver_FCs_table_final", "ensembl", folder_names)])
+saveRDS(Liver_FCs_table_final, paste(output, "Liver_FCs_table_final.RDS", sep = "/"))
+
+Liver_FCs_table_final %>%
+  dplyr::select(probeID, Symbol, description, FC_WT_TCDD, FC_WToverKO_CornOil) %>%
+  arrange(desc(FC_WT_TCDD)) 
+```
+
+##  {.unnumbered}
+
+## Comparison of Differential ProbeSets in Kidney and Liver {.tabset .tabset-pills .tabset-fade}
+
+To compare the number of differentially regulated ProbeSets for the liver and kidney, I have focused on primarily three kinds of significantly different ProbeSets: (1) ProbeSets downregulated in *Ahr* knockout mice when gavaged with vehicle; (2) those upregulated in wild-type mice gavaged with either TCDD or vehicle and (3) also those downregulated. For (1), the significantly downregulated ProbeSets require a functional *Ahr* for endogenously-regulated gene expression, independent of TCDD. For (2) and (3), the differential ProbeSets have upregulated or downregulated gene expression as a result of TCDD activation of intact C57BL/6 *Ahr* alleles.
+
+Generally, as evident by the correlation plots, the kidney and the liver's significantly expressed genes overlap some but are not highly correlated (*Ahr*-responive $r$ = 0.15; TCDD:Ahr $r$ = 0.27).
+
+In corroboration with the Principal Component scores, the upset plots below show the majority of the differentially expressed ProbeSets occur with respect to the status of the *Ahr* genotype, especially in the kidney. In each tissue, there is also an expected, large intersection of "*Ahr*-responsive" ProbeSets with differential ProbeSets up- or downregulated by the interaction of TCDD:AhR. The interaction of TCDD:AhR significantly affects many ProbeSets in both the kidney and liver. Very few ProbeSets are differentially expressed by TCDD alone. Between the liver and the kidney, the liver has more ProbeSets significantly regulated across conditions, which Boutros *et al.* attribute to the greater sequestration of TCDD in the liver than the kidney.
+
+```{r,results=FALSE}
+## Ahr regulated genes with Corn Oil FC Expression Gating
+L_Ahr_Up <-
+  Liver_FCs_table_final %>%
+  filter(Ahr == "*", FC_WToverKO_CornOil < 0) %>%
+  distinct(probeID) %>%
+  drop_na() %>%
+  .$probeID
+
+K_Ahr_Up <-
+  Kidney_FCs_table_final %>%
+  filter(Ahr == "*", FC_WToverKO_CornOil < 0) %>%
+  distinct(probeID) %>%
+  drop_na() %>%
+  .$probeID
+
+L_Ahr_Down <-
+  Liver_FCs_table_final %>%
+  filter(Ahr == "*", FC_WToverKO_CornOil > 0) %>%
+  distinct(probeID) %>%
+  drop_na() %>%
+  .$probeID
+
+K_Ahr_Down <-
+  Kidney_FCs_table_final %>%
+  filter(Ahr == "*", FC_WToverKO_CornOil > 0) %>%
+  distinct(probeID) %>%
+  drop_na() %>%
+  .$probeID
+
+## TCDD-AhR regulated genes with Wildtype FC Expression Gating
+L_Interx_Up <-
+  Liver_FCs_table_final %>%
+  filter(Interaction == "*", FC_WT_TCDD > 0) %>%
+  distinct(probeID) %>%
+  drop_na() %>%
+  .$probeID
+
+K_Interx_Up <-
+  Kidney_FCs_table_final %>%
+  filter(Interaction == "*", FC_WT_TCDD > 0) %>%
+  distinct(probeID) %>%
+  drop_na() %>%
+  .$probeID
+
+L_Interx_Down <-
+  Liver_FCs_table_final %>%
+  filter(Interaction == "*", FC_WT_TCDD < 0) %>%
+  distinct(probeID) %>%
+  drop_na() %>%
+  .$probeID
+
+K_Interx_Down <-
+  Kidney_FCs_table_final %>%
+  filter(Interaction == "*", FC_WT_TCDD < 0) %>%
+  distinct(probeID) %>%
+  drop_na() %>%
+  .$probeID
+
+## combining into list
+TissueRegged <- list(L_Ahr_Up, K_Ahr_Up, L_Ahr_Down, K_Ahr_Down, L_Interx_Up, K_Interx_Up, L_Interx_Down, K_Interx_Down)
+names(TissueRegged) <- c("Liver Ahr KO Upregulated", "Kidney Ahr KO Upregulated", "Liver Ahr KO Downregulated", "Kidney Ahr KO Downregulated", "Liver TCDD:AhR Upregulated", "Kidney TCDD:AhR Upregulated", "Liver TCDD:AhR Downregulated", "Kidney TCDD:AhR Downregulated")
+```
+
+### Magnitude and Percentage Differential ProbeSets in Liver and Kidney
+
+```{r}
+frxn_4302 <- function(x, length.computed=FALSE){
+  if (length.computed) {
+    
+    frxn <- x / 4101
+    
+  } else {
+    
+    frxn <- length(x) / 45101
+    
+  }
+  return(frxn)
+}
+
+tissueCondDiffMag <-
+  lapply(TissueRegged, length) %>%
+  do.call(rbind, .) %>%
+  as.data.frame() %>%
+  rename("V1"="Magnitude") %>%
+  rownames_to_column(var="Category") 
+  
+frxnDiffTissue <- 
+  lapply(TissueRegged, frxn_4302) %>%
+  do.call(rbind, .) %>%
+  as.data.frame() %>%
+  rename("V1"="Fraction") %>%
+  rownames_to_column(var="Category") %>%
+  left_join(tissueCondDiffMag, by = "Category") %>%
+  mutate(Tissue = ifelse(str_detect(Category, "Liver"), "Liver", "Kidney"),
+         Category = ifelse(str_detect(Category, "Liver"), 
+                           str_remove(Category, "Liver "), 
+                           str_remove(Category, "Kidney ")),
+         `Fold Change` = ifelse(str_detect(Category, "Upregulated"), "Upregulated", "Downregulated"),
+         Category = ifelse(str_detect(Category, " Upregulated"), 
+                           str_remove(Category, " Upregulated"), 
+                           str_remove(Category, " Downregulated")),
+         Fraction = paste(round(Fraction, 4) * 100, "%", sep=""),
+         Tissue = fct_relevel(Tissue, c("Liver", "Kidney"))) %>%
+  dplyr::select(Tissue, Category, `Fold Change`, Magnitude, Fraction) %>%
+  arrange(Tissue, Category)
+
+frxnDiffTissue 
+```
+
+### Fold-Change of *Ahr*-regulated ProbeSets across Tissues
+
+This figure is a reproduction of **FIG 4.** (C) in Boutros *et al*, 2009. The fold-change refers to the wild-type ProbeSet signal over the *Ahr*-null ProbeSet signal gavaged with vehicle. The color of the points refers to if a ProbeSet was significant in the Kidney, Liver, both, or neither. To calculate the Spearman's correlation value between Liver and Kidney gene expression, all of the ProbeSets significantly affected by the *Ahr*-genotype were filtered and non-significant ProbeSets were not included.
+
+```{r}
+L_AhrReg <-
+  Liver_FCs_table_final %>%
+  dplyr::select(probeID, "Liver_Ahr"=Ahr, "Liver"=FC_WToverKO_CornOil)
+
+K_AhrReg <-
+  Kidney_FCs_table_final %>%
+  dplyr::select(probeID, "Kidney_Ahr"=Ahr, "Kidney"=FC_WToverKO_CornOil)
+
+LK_AhrReg <-
+  L_AhrReg %>%
+  left_join(K_AhrReg, by = "probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by = "probeID") %>%
+  mutate(Significance = case_when(
+    
+    (Liver_Ahr == "*" & Kidney_Ahr == "*") ~ "Both",
+    (Liver_Ahr == "*" & Kidney_Ahr == "")  ~ "Liver",
+    (Liver_Ahr == ""  & Kidney_Ahr == "*") ~ "Kidney",
+    (Liver_Ahr == ""  & Kidney_Ahr == "")  ~ "Neither",
+    TRUE                                   ~ "Error")) %>%
+  dplyr::select(probeID, Symbol, Significance, Liver, Kidney)
+
+tissueAhrCorr <-
+  LK_AhrReg %>%
+  filter(Significance != "Neither") %>%
+  dplyr::select(Liver, Kidney) %>%
+  corrr::correlate(method = "spearman") %>%
+  filter(term == "Liver") %>%
+  mutate(Kidney = round(Kidney, 4)) %>%
+  .$Kidney
+
+xMax <- K_AhrReg %>% dplyr::select(Kidney) %>% max() + 1
+xMin <- K_AhrReg %>% dplyr::select(Kidney) %>% min() - 1
+yMax <- L_AhrReg %>% dplyr::select(Liver) %>% max() + 1
+yMin <- L_AhrReg %>% dplyr::select(Liver) %>% min() - 1
+width <- (xMax - xMin) / 2
+height <- (yMax - yMin) / 2
+SigColors <- c("#56B4E9", "#E69F00", "#CC79A7", "#999999")
+#pdf(paste(directoryPlots, "Boutros_Microarrays_LK_sigFCs_Ahr.pdf", sep = "/"), width = width+2, height = height+2)
+LK_AhrReg %>%
+  ggplot(aes(Kidney, Liver, color=Significance, fill=Significance,
+             label = ifelse(Significance == "Both", Symbol, ""))) +
+  ggrepel::geom_text_repel(force=10) +
+  annotate(geom="text", x=xMax-4, y=yMin+2, label=paste("Spearman's: ", tissueAhrCorr),
+           size=6, fontface="bold") +
+  geom_hline(yintercept=0, alpha = 0.2) +
+  geom_vline(xintercept=0, alpha = 0.2) +
+  geom_point(size=5, stroke = 2, alpha = 0.5, pch=21) +
+  scale_color_manual(values = SigColors) +
+  scale_fill_manual(values = SigColors) +
+  geom_hline(yintercept=0, alpha = 0.2) +
+  geom_vline(xintercept=0, alpha = 0.2) +
+  cowplot::theme_cowplot() +
+  theme(legend.position = "bottom", 
+        legend.justification = "center")
+#dev.off()
+```
+
+### Fold-Change of TCDD-AhR-regulated ProbeSets across Tissues
+
+This figure is a reproduction of **FIG 4.** (D) in Boutros *et al*, 2009. The fold-change refers to the wild-type ProbeSet signal of wild-type mice gavaged with 1000 µg/kg TCDD over wild-type mice gavaged with vehicle. The color of the points refers to if a ProbeSet was significant in the Kidney, Liver, both, or neither. To calculate the Spearman's correlation value between Liver and Kidney gene expression, all of the ProbeSets significantly affected by the TCDD-AhR interaction were filtered and non-significant ProbeSets were not included.
+
+```{r}
+L_TCDDAhrReg <-
+  Liver_FCs_table_final %>%
+  dplyr::select(probeID, "Liver_Interaction"=Interaction, "Liver"=FC_WT_TCDD)
+
+K_TCDDAhrReg <-
+  Kidney_FCs_table_final %>%
+  dplyr::select(probeID, "Kidney_Interaction"=Interaction, "Kidney"=FC_WT_TCDD)
+
+LK_TCDDAhrReg <-
+  L_TCDDAhrReg %>%
+  left_join(K_TCDDAhrReg, by = "probeID") %>%
+  mutate(Significance = case_when(
+    
+    (Liver_Interaction == "*" & Kidney_Interaction == "*") ~ "Both",
+    (Liver_Interaction == "*" & Kidney_Interaction == "")  ~ "Liver",
+    (Liver_Interaction == ""  & Kidney_Interaction == "*") ~ "Kidney",
+    (Liver_Interaction == ""  & Kidney_Interaction == "")  ~ "Neither",
+    TRUE                                                   ~ "Error"
+    
+  )) %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by = "probeID") %>%
+  dplyr::select(probeID, Symbol, Significance, Liver, Kidney)
+
+tissueTCDDAhrCorr <-
+  LK_TCDDAhrReg %>%
+  filter(Significance != "Neither") %>%
+  dplyr::select(Liver, Kidney) %>%
+  corrr::correlate(method = "spearman") %>%
+  filter(term == "Liver") %>%
+  mutate(Kidney = round(Kidney, 4)) %>%
+  .$Kidney
+
+xMax <- K_TCDDAhrReg %>% dplyr::select(Kidney) %>% max() + 1
+xMin <- K_TCDDAhrReg %>% dplyr::select(Kidney) %>% min() - 1
+yMax <- L_TCDDAhrReg %>% dplyr::select(Liver) %>% max() + 1
+yMin <- L_TCDDAhrReg %>% dplyr::select(Liver) %>% min() - 1
+width <- (xMax - xMin) / 2
+height <- (yMax - yMin) / 2
+SigColors <- c("#56B4E9", "#E69F00", "#CC79A7", "#999999")
+#pdf(paste(directoryPlots, "Boutros_Microarrays_LK_sigFCs_TCDDAhr.pdf", sep = "/"), width = 8, height = 12)
+LK_TCDDAhrReg %>%
+  ggplot(aes(Kidney, Liver, color=Significance, fill=Significance,
+             label = ifelse(Significance == "Both", Symbol, ""))) +
+  ggrepel::geom_text_repel(force=1) +
+  geom_hline(yintercept=0, alpha = 0.2) +
+  geom_vline(xintercept=0, alpha = 0.2) +
+  geom_point(size=5, stroke = 2, alpha = 0.5, pch=21) +
+  annotate(geom="text", x=xMax-4, y=yMin+2, label=paste("Spearman's: ", tissueTCDDAhrCorr),
+           size=6, fontface="bold") +
+  scale_color_manual(values = SigColors) +
+  scale_fill_manual(values = SigColors) +
+  geom_hline(yintercept=0, alpha = 0.2) +
+  geom_vline(xintercept=0, alpha = 0.2) +
+  cowplot::theme_cowplot() +
+  theme(legend.position = "bottom", 
+        legend.justification = "center")
+#dev.off()
+```
+
+### Similar Differential ProbeSets in Liver across Conditions
+
+```{r}
+listAllLiver <- TissueRegged[c(1,3,5,7)]
+upset(fromList(listAllLiver), order.by = "freq")
+```
+
+### Similar Differential ProbeSets in Kidney across Conditions
+
+```{r}
+listAllKidney  <- TissueRegged[c(2,4,6,8)]
+upset(fromList(listAllKidney), order.by = "freq")
+```
+
+### Differential ProbeSets by Ahr Genotype Across Tissues
+
+```{r}
+listAhrBothTissues <- TissueRegged[1:4]
+upset(fromList(listAhrBothTissues), order.by = "freq")
+```
+
+### Downregulated ProbeSets by Ahr Genotype Across Tissues
+
+```{r}
+listAhrDownBothTissues <- TissueRegged[3:4]
+upset(fromList(listAhrDownBothTissues), order.by = "freq")
+```
+
+### Upregulated ProbeSets by TCDD-Ahr Interaction Across Tissues
+
+```{r}
+listInterUpBothTissues <- TissueRegged[5:6]
+upset(fromList(listInterUpBothTissues), order.by = "freq")
+```
+
+### Downregulated ProbeSets by TCDD-Ahr Interaction Across Tissues
+
+```{r}
+listInterDownBothTissues <- TissueRegged[7:8]
+upset(fromList(listInterDownBothTissues), order.by = "freq")
+```
+
+## Functional Enrichment Analysis {.tabset .tabset-pills .tabset-fade}
+
+Using intersecting or differing significant ProbeSets across tissues, we can perform functional enrichment analysis on the corresponding gene symbols to see the pathways associated with significant expression in both the kidney and liver and each separately according to *Ahr* status and the administration of TCDD or vehicle.
+
+For performing functional enrichment analysis I used the R package `gProfiler2`.
+
+### Grabbing Distinct Gene Symbols by Tissue
+
+```{r,results=FALSE}
+i_AhrUp <- intersect(L_Ahr_Up, K_Ahr_Up)
+L_d_AhrUp <- setdiff(L_Ahr_Up, K_Ahr_Up)
+K_d_AhrUp <- setdiff(K_Ahr_Up, L_Ahr_Up)
+
+i_AhrDown <- intersect(L_Ahr_Down, K_Ahr_Down)
+L_d_AhrDown <- setdiff(L_Ahr_Down, K_Ahr_Down)
+K_d_AhrDown <- setdiff(K_Ahr_Down, L_Ahr_Down)
+
+i_InterxUp <- intersect(L_Interx_Up, K_Interx_Up)
+L_d_InterxUp <- setdiff(L_Interx_Up, K_Interx_Up)
+K_d_InterxUp <- setdiff(K_Interx_Up, L_Interx_Up)
+
+i_InterxDown <- intersect(L_Interx_Down, K_Interx_Down)
+L_d_InterxDown <- setdiff(L_Interx_Down, K_Interx_Down)
+K_d_InterxDown <- setdiff(K_Interx_Down, L_Interx_Down)
+
+Symbols_AhrUp <-
+  i_AhrUp  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+  
+Symbols_L_AhrUp <-
+  L_d_AhrUp  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+  
+Symbols_K_AhrUp <-
+  K_d_AhrUp  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+
+Symbols_AhrDown <-
+  i_AhrDown  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+  
+Symbols_L_AhrDown <-
+  L_d_AhrDown  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+  
+Symbols_K_AhrDown <-
+  K_d_AhrDown  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+
+Symbols_InterxUp <-
+  i_InterxUp  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+  
+Symbols_L_InterxUp <-
+  L_d_InterxUp  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+  
+Symbols_K_InterxUp <-
+  K_d_InterxUp  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+
+Symbols_InterxDown <-
+  i_InterxDown  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+  
+Symbols_L_InterxDown <-
+  L_d_InterxDown  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+  
+Symbols_K_InterxDown <-
+  K_d_InterxDown  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+```
+
+### gProfiler2 Functional Enrichment
+
+```{r}
+## Ahr upregulated genes  
+AhrUp_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_AhrUp$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Liver Ahr upregulated genes  
+AhrUp_L_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_L_AhrUp$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Kidney Ahr upregulated genes 
+AhrUp_K_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_K_AhrUp$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Ahr downregulated genes  
+AhrDown_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_AhrDown$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Liver Ahr downregulated genes  
+AhrDown_L_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_L_AhrDown$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Kidney Ahr downregulated genes 
+AhrDown_K_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_K_AhrDown$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Interaction upregulated genes  
+InterxUp_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_InterxUp$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Interaction upregulated genes  
+InterxUp_L_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_L_InterxUp$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Interaction upregulated genes 
+InterxUp_K_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_K_InterxUp$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Interaction downregulated genes  
+#InterxDown_PathwayEnrichment <-
+#  gprofiler2::gost(query = Symbols_InterxDown$Symbol,
+#                   organism = "mmusculus",
+#                   correction_method = "fdr")
+
+## Interaction downregulated genes  
+InterxDown_L_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_L_InterxDown$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Interaction downregulated genes 
+InterxDown_K_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_K_InterxDown$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+```
+
+### Functional Enrichment - Ahr Downregulated
+
+```{r}
+AhrDown_PathwayEnrichment$result %>% dplyr::select(source, term_name, term_size, intersection_size)
+```
+
+### Functional Enrichment - Liver AhR Downregulated
+
+```{r}
+AhrDown_L_PathwayEnrichment$result %>% dplyr::select(source, term_name, term_size, intersection_size)
+```
+
+### Functional Enrichment - Kidney AhR Downregulated
+
+```{r}
+AhrDown_K_PathwayEnrichment$result %>% dplyr::select(source, term_name, term_size, intersection_size)
+```
+
+### Functional Enrichment - TCDD-Ahr Upregulated
+
+```{r}
+InterxUp_PathwayEnrichment$result %>% dplyr::select(source, term_name, term_size, intersection_size)
+```
+
+### Functional Enrichment - Liver TCDD-Ahr Upregulated
+
+```{r}
+InterxUp_L_PathwayEnrichment$result %>% dplyr::select(source, term_name, term_size, intersection_size)
+```
+
+### Functional Enrichment - Kidney TCDD-Ahr Upregulated
+
+```{r}
+InterxUp_K_PathwayEnrichment$result %>% dplyr::select(source, term_name, term_size, intersection_size)
+```
+
+### Functional Enrichment - Liver TCDD-Ahr Downregulated
+
+```{r}
+InterxDown_L_PathwayEnrichment$result %>% dplyr::select(source, term_name, term_size, intersection_size)
+```
+
+### Functional Enrichment - Kidney TCDD-Ahr Downregulated
+
+```{r}
+InterxDown_K_PathwayEnrichment$result %>% dplyr::select(source, term_name, term_size, intersection_size)
+```
+
+##  {.unnumbered}
+
+## Relevance to Beaumont-HNMR Collaboration {.tabset .tabset-pills .tabset-fade}
+
+The Boutros *et al.* microarrays provide a glimpse of the *Ahr* and TCDD-AhR mediated gene expression in the liver and kidney. In our collaboration with the Stewart lab at Beaumont Health, we have detected a dose-dependent induction of Trimethylamine *N*-Oxide (TMAO) and glycolate in the urine of mice gavaged every 4 days for 28 days with some dose of TCDD (0 - 30 µg/kg TCDD). 
+
+TMAO is formed when Trimethylamine (TMA), a small molecule formed by the gut microbiome, is oxidized by Flavin Monooxygenases (FMOs) and primarily by FMO3. In the Boutros *et al.* study design (gavaged 1000 µg/kg TCDD or vehicle 19 hours before sacrifice), *Fmo3* is significantly induced  66-fold in the liver of wild-type mice treated with TCDD compared to vehicle. *Fmo2*, which has less TMAO-forming activity, is also significantly induced by TCDD (22-fold); additionally, it is significantly induced in *Ahr* null mice (1.79-fold), suggesting alternative transcription factors regulating its expression. *Abcc4*, a known exporter of bile acid from the liver into the bloodstream, which has been shown to export TMAO *in vitro*, is induced ~ 47-fold in wild-type mouse liver after 28 days of gavaging repeatedly with 30 µg/kg TCDD. However, in the Boutros wild-type livers, *Abcc4* is only induced 1.47-fold. After TMAO is exported from the liver, it is cleared in the urine and be filtered by the kidney. In the same study, which showed TMAO is exported by *Abcc4*, TMAO was shown to be imported into kidney cells by *Slc22a2*, which in the Boutros kidney microarray is modestly downregulated by TCDD exposure (1.03 fold) similar to *Slc47a1* (1.06-fold), which exports TMAO from renal cells. Interestingly, both transporters are downregulated in *Ahr*-null mice (1.21- and 1.12-fold, respectively) suggesting their expression is partly dependent on AhR-mediated kidney development.
+
+Glycolate is formed from primarily two pathways: hydroxyproline catabolism, which occurs primarily in the liver, and glyoxal detoxification, which occurs in the liver, kidney, and other tissues. Hydroxyproline is an essential building block of collagen and has been previously been shown by Nault *et al.* to be dose-dependently induced in mice repeatedly gavaged with TCDD to support liver fibrosis. Maybe the most pertinent enzyme in the pathway related to glycolate, *Hao1*, catalyzes the formation of glyoxylate from glycolate and atmospheric oxygen with Flavin Mononucleotide (FMN). Experiments with KO models of *Hao1* or a riboflavin-deficient diet in mice have shown an increase in levels of urinary glycolate levels. It is one of the most dose-dependently reduced enzymes in the liver of male mice repeatedly gavaged for 28 days with 30 µg/kg TCDD (~ 250-fold). In the wild-type livers of Boutros *et al.*, it is more modestly reduced (1.2-fold); although it along with its peroxisomal partner *Agxt* and the glyoxal detoxifying enzyme *Glo1* have significantly altered expression in *Ahr*-null liver. In the KOs, *Hao1* and *Glo1* are reduced 1.4 and 2.1-fold, respectively, and *Agxt* is induced 1.88-fold. In the wild-type kidneys of Boutros *et al.*, *Aldh2*, which turns glyoxal precursors into glycolate, is induced (1.57-fold).
+
+### TMA-TMAO Pathway
+
+```{r}
+L_TMAO_Symbols <- c("Fmo1", "Fmo2", "Fmo3", "Abcc4")
+L_TMAO <-
+  Liver_FCs_table_final %>%
+  filter(Symbol %in% L_TMAO_Symbols) %>%
+  mutate(Tissue = "Liver") %>%
+  group_by(Symbol) %>%
+  slice_max(abs(FC_WT_TCDD), n=1) %>%
+  mutate(FC_WT_TCDD = 2**(FC_WT_TCDD),
+         FC_WToverKO_CornOil = 2**(FC_WToverKO_CornOil)) %>%
+  dplyr::select(Tissue, Symbol, description, "Wild-type FC" = FC_WT_TCDD, "Corn Oil FC" = FC_WToverKO_CornOil,
+               Ahr, TCDD, "TCDD:AhR" = Interaction) %>%
+  arrange(factor(Symbol, levels = L_TMAO_Symbols))
+
+K_TMAO_Symbols <- c("Slc22a2", "Slc47a1", "Slc22a8")
+K_TMAO <-
+  Kidney_FCs_table_final %>%
+  filter(Symbol %in% K_TMAO_Symbols) %>%
+  mutate(Tissue = "Kidney") %>%
+  group_by(Symbol) %>%
+  slice_max(abs(FC_WT_TCDD), n=1) %>%
+  mutate(FC_WT_TCDD = 2**(FC_WT_TCDD),
+         FC_WToverKO_CornOil = 2**(FC_WToverKO_CornOil)) %>%
+  dplyr::select(Tissue, Symbol, description, "Wild-type FC" = FC_WT_TCDD, "Corn Oil FC" = FC_WToverKO_CornOil,
+               Ahr, TCDD, "TCDD:AhR" = Interaction) %>%
+  arrange(factor(Symbol, levels = K_TMAO_Symbols))
+
+rbind(L_TMAO, K_TMAO)
+```
+
+### Glycolate-producing Enzymes
+
+```{r}
+L_Gly_Symbols <- c("Prodh2", "Aldh4a1", "Got2", "Hoga1", "Grhpr", "Agxt2", "Ldha", "Hao1", "Agxt", "Glo1", "Hagh", "Aldh2")
+L_Gly <-
+  Liver_FCs_table_final %>%
+  filter(Symbol %in% L_Gly_Symbols) %>%
+  mutate(Tissue = "Liver") %>%
+  group_by(Symbol) %>%
+  slice_max(abs(FC_WT_TCDD), n=1) %>%
+  mutate(FC_WT_TCDD = 2**(FC_WT_TCDD),
+         FC_WToverKO_CornOil = 2**(FC_WToverKO_CornOil)) %>%
+  dplyr::select(Tissue, Symbol, description, "Wild-type FC" = FC_WT_TCDD, "Corn Oil FC" = FC_WToverKO_CornOil,
+               Ahr, TCDD, "TCDD:AhR" = Interaction) %>%
+  arrange(factor(Symbol, levels = L_Gly_Symbols))
+
+K_Gly_Symbols <- c("Glo1", "Hagh", "Aldh2", "Slc26a6")
+K_Gly <-
+  Kidney_FCs_table_final %>%
+  filter(Symbol %in% K_Gly_Symbols) %>%
+  mutate(Tissue = "Kidney") %>%
+  group_by(Symbol) %>%
+  slice_max(abs(FC_WT_TCDD), n=1) %>%
+  mutate(FC_WT_TCDD = 2**(FC_WT_TCDD),
+         FC_WToverKO_CornOil = 2**(FC_WToverKO_CornOil)) %>%
+  dplyr::select(Tissue, Symbol, description, "Wild-type FC" = FC_WT_TCDD, "Corn Oil FC" = FC_WToverKO_CornOil,
+               Ahr, TCDD, "TCDD:AhR" = Interaction) %>%
+  arrange(factor(Symbol, levels = K_Gly_Symbols))
+
+rbind(L_Gly, K_Gly)
+```
+
+##  {.unnumbered}
+
+# Supplemental: Comparison of (FC-agnostic) Differential Probes across Tissue by Ahr Genotype and TCDD-AhR Interaction
+
+## Upset Plots of Significant Genes {.tabset .tabset-pills .tabset-fade}
+
+```{r}
+sigLivAhr <- Liver_FCs_table_final[Liver_FCs_table_final$Ahr == "*", ]$probeID
+sigLivTCDD <- Liver_FCs_table_final[Liver_FCs_table_final$TCDD == "*", ]$probeID
+sigLivInterX <- Liver_FCs_table_final[Liver_FCs_table_final$Interaction == "*", ]$probeID
+
+sigKidAhr <- Kidney_FCs_table_final[Kidney_FCs_table_final$Ahr == "*", ]$probeID
+sigKidTCDD <- Kidney_FCs_table_final[Kidney_FCs_table_final$TCDD == "*", ]$probeID
+sigKidInterX <- Kidney_FCs_table_final[Kidney_FCs_table_final$Interaction == "*", ]$probeID
+
+listOfSigs <- list(sigLivAhr, sigLivTCDD, sigLivInterX, sigKidAhr, sigKidTCDD, sigKidInterX)
+names(listOfSigs) <- c("Liver_Ahr", "Liver_TCDD", "Liver_InterX", "Kidney_Ahr", "Kidney_TCDD", "Kidney_InterX")
+```
+
+### TCDD-AhR Interaction with Wildtype FC Expression Gating
+
+```{r}
+i_AhrUp <- intersect(L_Ahr_Up, K_Ahr_Up)
+L_d_AhrUp <- setdiff(L_Ahr_Up, K_Ahr_Up)
+K_d_AhrUp <- setdiff(K_Ahr_Up, L_Ahr_Up)
+
+i_AhrDown <- intersect(L_Ahr_Down, K_Ahr_Down)
+L_d_AhrDown <- setdiff(L_Ahr_Down, K_Ahr_Down)
+K_d_AhrDown <- setdiff(K_Ahr_Down, L_Ahr_Down)
+
+i_InterxUp <- intersect(L_Interx_Up, K_Interx_Up)
+L_d_InterxUp <- setdiff(L_Interx_Up, K_Interx_Up)
+K_d_InterxUp <- setdiff(K_Interx_Up, L_Interx_Up)
+
+i_InterxDown <- intersect(L_Interx_Down, K_Interx_Down)
+L_d_InterxDown <- setdiff(L_Interx_Down, K_Interx_Down)
+K_d_InterxDown <- setdiff(K_Interx_Down, L_Interx_Down)
+```
+
+### Grabbing Distinct Gene Symbols by Tissue
+
+```{r}
+Symbols_AhrUp <-
+  i_AhrUp  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+  
+Symbols_L_AhrUp <-
+  L_d_AhrUp  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+  
+Symbols_K_AhrUp <-
+  K_d_AhrUp  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+
+Symbols_AhrDown <-
+  i_AhrDown  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+  
+Symbols_L_AhrDown <-
+  L_d_AhrDown  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+  
+Symbols_K_AhrDown <-
+  K_d_AhrDown  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+
+Symbols_InterxUp <-
+  i_InterxUp  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+  
+Symbols_L_InterxUp <-
+  L_d_InterxUp  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+  
+Symbols_K_InterxUp <-
+  K_d_InterxUp  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+
+Symbols_InterxDown <-
+  i_InterxDown  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+  
+Symbols_L_InterxDown <-
+  L_d_InterxDown  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+  
+Symbols_K_InterxDown <-
+  K_d_InterxDown  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+```
+
+### gProfiler2 Functional Enrichment
+
+```{r}
+## Ahr upregulated genes  
+AhrUp_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_AhrUp$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Liver Ahr upregulated genes  
+AhrUp_L_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_L_AhrUp$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Kidney Ahr upregulated genes 
+AhrUp_K_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_K_AhrUp$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Ahr downregulated genes  
+AhrDown_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_AhrDown$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Liver Ahr downregulated genes  
+AhrDown_L_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_L_AhrDown$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Kidney Ahr downregulated genes 
+AhrDown_K_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_K_AhrDown$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Interaction upregulated genes  
+InterxUp_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_InterxUp$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Interaction upregulated genes  
+InterxUp_L_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_L_InterxUp$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Interaction upregulated genes 
+InterxUp_K_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_K_InterxUp$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Interaction downregulated genes  
+#InterxDown_PathwayEnrichment <-
+#  gprofiler2::gost(query = Symbols_InterxDown$Symbol,
+#                   organism = "mmusculus",
+#                   correction_method = "fdr")
+
+## Interaction downregulated genes  
+InterxDown_L_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_L_InterxDown$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Interaction downregulated genes 
+InterxDown_K_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_K_InterxDown$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+```
+
+### In the Liver
+
+```{r}
+listOfSigsLiv <- listOfSigs[1:3]
+upset(fromList(listOfSigsLiv), order.by = "freq")
+```
+
+### In the Kidney
+
+```{r}
+listOfSigsKid <- listOfSigs[4:6]
+upset(fromList(listOfSigsKid), order.by = "freq")
+```
+
+### By Ahr Genotype
+
+```{r}
+Altered_Ahr <- listOfSigs[c(1, 4)]
+upset(fromList(Altered_Ahr), order.by = "freq")
+```
+
+### By Interaction of Genotype and TCDD
+
+```{r}
+Altered_Interaction <- listOfSigs[c(3, 6)]
+upset(fromList(Altered_Interaction), order.by = "freq")
+```
+
+##  {.unnumbered}
+
+## Upset plots of Significant Pathways {.tabset .tabset-pills .tabset-fade}
+
+### Grabbing Distinct Gene Symbols by Tissue
+
+```{r}
+Symbols_sigLivAhr <-
+  sigLivAhr  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+  
+Symbols_sigLivInterX <-
+  sigLivInterX  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+
+Symbols_sigKidAhr <-
+  sigKidAhr  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+  
+Symbols_sigKidInterX <-
+  sigKidInterX  %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+```
+
+### Grabbing Distinct Gene Symbols by Genotype
+
+```{r}
+names(Altered_Ahr) <- c("L", "K")
+i_sigAhr <- intersect(Altered_Ahr[["L"]], Altered_Ahr[["K"]])
+L_d_sigAhr <- setdiff(Altered_Ahr[["L"]], Altered_Ahr[["K"]])
+K_d_sigAhr <- setdiff(Altered_Ahr[["K"]], Altered_Ahr[["L"]])
+
+Symbols_i_sigAhr <-
+  i_sigAhr %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+
+Symbols_L_d_sigAhr <-
+  L_d_sigAhr %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+
+Symbols_K_d_sigAhr <-
+  K_d_sigAhr %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+```
+
+### Grabbing Distinct Gene Symbols by Interaction
+
+```{r}
+names(Altered_Interaction) <- c("L", "K")
+i_sigInterx <- intersect(Altered_Interaction[["L"]], Altered_Interaction[["K"]])
+L_d_sigInterx <- setdiff(Altered_Interaction[["L"]], Altered_Interaction[["K"]])
+K_d_sigInterx <- setdiff(Altered_Interaction[["K"]], Altered_Interaction[["L"]])
+
+Symbols_i_sigInterx <-
+  i_sigInterx %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+
+Symbols_L_d_sigInterx <-
+  L_d_sigInterx %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+
+Symbols_K_d_sigInterx <-
+  K_d_sigInterx %>%
+  as.data.frame() %>%
+  rename("."="probeID") %>%
+  left_join(Liver_FCs_table_final[,which(names(Liver_FCs_table_final) %in% c("probeID", "Symbol"))], by="probeID") %>%
+  distinct(Symbol) %>%
+  drop_na()
+```
+
+### gProfiler2 Functional Enrichment
+
+```{r}
+## Liver Ahr genetype and interaction
+Liver_Ahr_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_sigLivAhr$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+Liver_Interx_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_sigLivInterX$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Kidney Ahr genetype and interaction
+Kidney_Ahr_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_sigKidAhr$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+Kidney_Interx_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_sigKidInterX$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Same Ahr regulated genes across tissue
+TissueIntersect_Ahr_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_i_sigAhr$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Diff Ahr regulated genes in liver
+Diff_Liver_Ahr_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_L_d_sigAhr$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Diff Ahr regulated genes in kidney
+Diff_Kidney_Ahr_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_K_d_sigAhr$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Same TCDD-Ahr regulated genes across tissue
+TissueIntersect_Interx_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_i_sigInterx$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Diff TCDD-Ahr regulated genes in liver
+Diff_Liver_Interx_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_L_d_sigInterx$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+
+## Diff TCDD-Ahr regulated genes in kidney
+Diff_Kidney_Interx_PathwayEnrichment <-
+  gprofiler2::gost(query = Symbols_K_d_sigInterx$Symbol,
+                   organism = "mmusculus",
+                   correction_method = "fdr")
+```
+
+### Functional Enrichment - Liver Ahr Regulated
+
+```{r}
+kable(Liver_Ahr_PathwayEnrichment$result %>% dplyr::select(source, term_name, term_size, intersection_size), 
+      table.attr = "class=\"striped\"", format = "html")
+```
+
+### Functional Enrichment - Liver TCDD-AhR Regulated
+
+```{r}
+kable(Liver_Interx_PathwayEnrichment$result %>% dplyr::select(source, term_name, term_size, intersection_size), 
+      table.attr = "class=\"striped\"", format = "html")
+```
+
+### Functional Enrichment - Kidney Ahr Regulated
+
+```{r}
+kable(Kidney_Ahr_PathwayEnrichment$result %>% dplyr::select(source, term_name, term_size, intersection_size), 
+      table.attr = "class=\"striped\"", format = "html")
+```
+
+### Functional Enrichment - Kidney TCDD-AhR Regulated
+
+```{r}
+kable(Kidney_Interx_PathwayEnrichment$result %>% dplyr::select(source, term_name, term_size, intersection_size), 
+      table.attr = "class=\"striped\"", format = "html")
+```
+
+### Functional Enrichment - Liver and Kidney Ahr Regulated
+
+```{r}
+kable(TissueIntersect_Ahr_PathwayEnrichment$result %>% dplyr::select(source, term_name, term_size, intersection_size), 
+      table.attr = "class=\"striped\"", format = "html")
+```
+
+### Functional Enrichment - Liver-specific Ahr Regulated
+
+```{r}
+kable(Diff_Liver_Ahr_PathwayEnrichment$result %>% dplyr::select(source, term_name, term_size, intersection_size), 
+      table.attr = "class=\"striped\"", format = "html")
+```
+
+### Functional Enrichment - Kidney-specific Ahr Regulated
+
+```{r}
+kable(Diff_Kidney_Ahr_PathwayEnrichment$result %>% dplyr::select(source, term_name, term_size, intersection_size), 
+      table.attr = "class=\"striped\"", format = "html")
+```
+
+### Functional Enrichment - Liver and Kidney TCDD-AhR Regulated
+
+```{r}
+kable(TissueIntersect_Interx_PathwayEnrichment$result %>% dplyr::select(source, term_name, term_size, intersection_size), 
+      table.attr = "class=\"striped\"", format = "html")
+```
+
+### Functional Enrichment - Liver-specific TCDD-AhR Regulated
+
+```{r}
+kable(Diff_Liver_Interx_PathwayEnrichment$result %>% dplyr::select(source, term_name, term_size, intersection_size), 
+      table.attr = "class=\"striped\"", format = "html")
+```
+
+### Functional Enrichment - Kidney-specific TCDD-AhR Regulated
+
+```{r}
+kable(Diff_Kidney_Interx_PathwayEnrichment$result %>% dplyr::select(source, term_name, term_size, intersection_size), 
+      table.attr = "class=\"striped\"", format = "html")
+```
+
+##  {.unnumbered}
