@@ -1,6 +1,6 @@
 # Analysis of liver and kidney microarrays of Ahr-null or wild-type C57BL/6 mice ravaged with TCDD or vehicle
 
-This repo contains my reproduction of the liver and kidney Affymetrix microarray analysis found in the paper by [Boutros *et al*, 2009](https://pubmed.ncbi.nlm.nih.gov/19759094/). [[1]](#1).
+This repo contains my reproduction of the liver and kidney Affymetrix microarray analysis found in the paper by [Boutros *et al*, 2009](https://pubmed.ncbi.nlm.nih.gov/19759094/) [[1]](#1).
 
 2,3,7,8-tetrachlorodibenzo-*p*-dioxin (TCDD) is a "forever" chemical and byproduct of industrial chemical synthesis and incomplete combustion. As described in Boutros *et al.*, C57BL/6 mice with or without a knocked-out *Ahr* (*Ahr*-null or wild-type, respectively) were gavaged with 1000 µg/kg TCDD or vehicle. 19 hours later, the mice were sacrificed and their liver and kidneys were harvested. Although the authors say in their Methods the livers and kidneys were collected from the same mice, I was not able to find animal identifiers, indicating if a liver microarray from a certain mouse matched to a kidney microarray and vice versa.
 
@@ -18,6 +18,7 @@ Upcoming Analysis:
 ## References
 <a id="1">[1]</a> 
 Boutros, P. C., Bielefeld, K. A., Pohjanvirta, R. & Harper, P. A. (2009) "Dioxin-dependent and dioxin-independent gene batteries: Comparison of liver and kidney in AHR-null mice." Toxicol. Sci. 112, 245–256. doi: 10.1093/toxsci/kfp191.
-<a id="2">[1]</a> 
+
+<a id="2">[2]</a> 
 Ritchie ME, Phipson B, Wu D, Hu Y, Law CW, Shi W, Smyth GK (2015). “limma powers differential expression analyses for RNA-sequencing and microarray studies.” Nucleic Acids Research, 43(7), e47. doi: 10.1093/nar/gkv007.
 
